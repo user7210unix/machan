@@ -792,38 +792,24 @@
 
 <script>
 /* ══════════════════════════════════════════════════════
- *  CATALOG READER
- *  - Full-res images in catalog (not pixelated thumbs)
- *  - Shimmer placeholder → clean fade-in on load
- *  - Multiple CORS proxy fallback
- *  - Roboto font, larger mobile text
- *  - Palette switcher (Ember / Green / Navy)
- *  - Options drawer, pull-to-refresh, swipe back
- * ══════════════════════════════════════════════════════ */
-
-/* ── CONFIG ── */
+ *  FULL SCRIPT - ALL IMAGES FORCED VIA PROXY
+ *  No direct i.4cdn.org allowed
+ ══════════════════════════════════════════════════════ */
 
 const PROXIES = [
   'https://api.codetabs.com/v1/proxy?quest=',
-  'https://corsproxy.io/?',
   'https://api.allorigins.win/raw?url=',
+  'https://corsproxy.io/?',
+];
+
+const IMG_PROXIES = [
+  'https://api.codetabs.com/v1/proxy?quest=',     // Primary
+  'https://api.allorigins.win/raw?url=',          // Fallback 1
+  'https://corsproxy.io/?',                       // Fallback 2
 ];
 
 const API     = 'https://a.4cdn.org';
 const IMG_CDN = 'https://i.4cdn.org';
-
-/*
- * Image proxies — ordered by preference.
- * wsrv.nl resizes images server-side (w= param), giving us
- * crisp but bandwidth-efficient images. Without proxy (index 0)
- * we try direct which often works.
- */
-const IMG_PROXIES = [
-  null,                                // direct first
-  'https://api.codetabs.com/v1/proxy?quest=',
-  'https://api.allorigins.win/raw?url=',
-  'https://corsproxy.io/?',
-];
 
 const BOARDS = [
   { id: 'hr', label: '/hr/' }, { id: 'wg', label: '/wg/' },
@@ -844,7 +830,6 @@ const SEEDS = [
 ];
 
 /* ── STATE ── */
-
 const S = {
   board:   'hr',
   sort:    'heat',
@@ -855,19 +840,13 @@ const S = {
 };
 
 let catalogAbort = null;
-let apiProxyIdx  = 0;
 
 /* ── FETCH HELPERS ── */
-
 async function fetchJSON(url, signal) {
-  const order = [apiProxyIdx, ...PROXIES.map((_,i)=>i).filter(i=>i!==apiProxyIdx)];
-  for (const idx of order) {
+  for (const proxy of PROXIES) {
     try {
-      const res = await fetch(PROXIES[idx] + encodeURIComponent(url), signal ? { signal } : {});
-      if (!res.ok) continue;
-      const d = await res.json();
-      apiProxyIdx = idx;
-      return d;
+      const res = await fetch(proxy + encodeURIComponent(url), signal ? { signal } : {});
+      if (res.ok) return await res.json();
     } catch(e) {
       if (e.name === 'AbortError') return null;
     }
@@ -875,80 +854,39 @@ async function fetchJSON(url, signal) {
   return null;
 }
 
-/*
- * Build a catalog image URL.
- *
- * CRITICAL CHANGE vs old version:
- * We now use the full-resolution image file (t.tim + t.ext) instead
- * of the small thumbnail (t.tim + "s.jpg"). Thumbnails are ~125px
- * wide, which looks terrible at 50vw on a 390pt wide phone.
- *
- * We pass the image through wsrv.nl with a width cap so the browser
- * doesn't download a 5MB original — wsrv.nl resizes and caches it.
- *
- * width: 800 for hero (full-width), 500 for grid (half-width)
- *
- * For .webm / .mp4 we can't show a video frame, so we fall back
- * to the small thumbnail which is still a JPEG.
- */
-function makeCatalogImgUrl(board, tim, ext, width, proxyIdx) {
+/* ALL IMAGES FORCED THROUGH PROXY */
+function makeCatalogImgUrl(board, tim, ext, width) {
   if (!tim || !ext) return null;
-
   const isVideo = ['.webm', '.mp4'].includes(ext.toLowerCase());
-  const raw = isVideo
-    ? `${IMG_CDN}/${board}/${tim}s.jpg`          /* thumb for video */
-    : `${IMG_CDN}/${board}/${tim}${ext}`;         /* full res */
-
-  const proxy = IMG_PROXIES[proxyIdx];
-
-  if (!proxy) return raw; /* direct */
-
-  if (proxy.includes('wsrv') && !isVideo) {
-    /* wsrv.nl resizes: w=width, output=jpg, quality 84 */
-    return `${proxy}${encodeURIComponent(raw)}&w=${width}&output=jpg&q=84`;
-  }
-
-  return proxy + encodeURIComponent(raw);
+  const raw = isVideo ? `${IMG_CDN}/${board}/${tim}s.jpg` : `${IMG_CDN}/${board}/${tim}${ext}`;
+  return IMG_PROXIES[0] + encodeURIComponent(raw);
 }
 
-function makeFullUrl(board, tim, ext, proxyIdx) {
+function makeFullUrl(board, tim, ext) {
   if (!tim || !ext) return null;
-  const raw   = `${IMG_CDN}/${board}/${tim}${ext}`;
-  const proxy = IMG_PROXIES[proxyIdx];
-  if (!proxy) return raw;
-  return proxy + encodeURIComponent(raw);
+  const raw = `${IMG_CDN}/${board}/${tim}${ext}`;
+  return IMG_PROXIES[0] + encodeURIComponent(raw);   // Always proxy
 }
 
-/*
- * Image load with proxy fallback.
- * Call this to set up an img element. On error, tries next proxy.
- */
-function loadImgWithFallback(img, makeUrl) {
+/* Image loader - always uses proxy with fallback */
+function loadImgWithFallback(img, makeUrlFn) {
   let idx = 0;
   const tryNext = () => {
-    if (idx >= IMG_PROXIES.length) { img.style.display = 'none'; return; }
-    const src = makeUrl(idx++);
+    if (idx >= IMG_PROXIES.length) {
+      img.style.display = 'none';
+      return;
+    }
+    const src = makeUrlFn(idx++);
     if (!src) { tryNext(); return; }
     img.onerror = tryNext;
     img.src = src;
   };
   img.onload = () => img.classList.add('loaded');
+  img.crossOrigin = "anonymous";
   tryNext();
 }
 
-async function loadCatalog(board, signal) {
-  const data = await fetchJSON(`${API}/${board}/catalog.json`, signal);
-  if (!data) return [];
-  return data.flatMap(p => p.threads || []);
-}
-
-async function loadThread(board, no) {
-  const data = await fetchJSON(`${API}/${board}/thread/${no}.json`);
-  return data ? (data.posts || []) : [];
-}
-
-/* ── CLUSTERING ── */
-
+/* ── CORE FUNCTIONS ── */
 function heatScore(t) {
   const h = Math.max((Date.now()/1000 - t.time) / 3600, 0.05);
   return Math.min((t.replies||0) / h / 60, 1);
@@ -971,14 +909,17 @@ function buildClusters(threads, sort) {
   const cmp = { heat:(a,b)=>b._heat-a._heat, new:(a,b)=>b.time-a.time, img:(a,b)=>(b.images||0)-(a.images||0) }[sort] || ((a,b)=>b._heat-a._heat);
   ann.sort(cmp);
   const map = new Map();
-  for (const t of ann) { if (!map.has(t._cl)) map.set(t._cl,[]); map.get(t._cl).push(t); }
+  for (const t of ann) {
+    if (!map.has(t._cl)) map.set(t._cl,[]);
+    map.get(t._cl).push(t);
+  }
   const clusters = [];
-  for (const [key,ts] of map) clusters.push({ key, threads:ts, avgHeat: ts.reduce((s,t)=>s+t._heat,0)/ts.length });
+  for (const [key,ts] of map) {
+    clusters.push({ key, threads:ts, avgHeat: ts.reduce((s,t)=>s+t._heat,0)/ts.length });
+  }
   clusters.sort((a,b) => b.avgHeat - a.avgHeat);
   return clusters;
 }
-
-/* ── TEXT UTILS ── */
 
 function parseComment(html) {
   if (!html) return '';
@@ -1014,8 +955,6 @@ function statsHtml(t) {
   </div>`;
 }
 
-/* ── SKELETON ── */
-
 function showSkeleton() {
   const feed = document.getElementById('feed');
   feed.innerHTML = '';
@@ -1029,16 +968,11 @@ function showSkeleton() {
 }
 
 /* ── RENDER CATALOG ── */
-
 function renderFeed(clusters, board) {
   const feed = document.getElementById('feed');
   feed.innerHTML = '';
   if (!clusters.length) { feed.innerHTML='<div class="state-msg">no threads found</div>'; return; }
 
-  /*
-   * rootMargin 700px — loads images far before they enter viewport.
-   * On a 900px tall phone, this pre-loads ~2 full screens ahead.
-   */
   const io = new IntersectionObserver(entries => {
     for (const e of entries) {
       if (e.isIntersecting) {
@@ -1084,19 +1018,13 @@ function renderHeroCard(t, board, io) {
   const wrap = document.createElement('div'); wrap.className='hero-wrap';
 
   if (t.tim && t.ext) {
-    /* Shimmer div shown while loading */
     const shimmer = document.createElement('div'); shimmer.className='shimmer-bg';
     wrap.appendChild(shimmer);
 
     const img = document.createElement('img'); img.className='hero-img'; img.alt='';
+    const makeUrl = () => makeCatalogImgUrl(board, t.tim, t.ext, 800);
 
-    /* Use full-res at w=800 for crisp hero display */
-    const makeUrl = (pIdx) => makeCatalogImgUrl(board, t.tim, t.ext, 800, pIdx);
-
-    /* Hook into IO: start loading only when near viewport */
     img._pendingLoad = () => loadImgWithFallback(img, makeUrl);
-    /* Also remove shimmer when image loads */
-    const origOnload = img.onload;
     img.addEventListener('load', () => { shimmer.style.display='none'; });
 
     io.observe(img);
@@ -1127,9 +1055,7 @@ function renderGridCard(t, board, io) {
     wrap.appendChild(shimmer);
 
     const img = document.createElement('img'); img.className='card-img'; img.alt='';
-
-    /* Full-res at w=500 for grid cards — crisp on retina, fast to load */
-    const makeUrl = (pIdx) => makeCatalogImgUrl(board, t.tim, t.ext, 500, pIdx);
+    const makeUrl = () => makeCatalogImgUrl(board, t.tim, t.ext, 500);
 
     img._pendingLoad = () => loadImgWithFallback(img, makeUrl);
     img.addEventListener('load', () => { shimmer.style.display='none'; });
@@ -1150,7 +1076,6 @@ function renderGridCard(t, board, io) {
 }
 
 /* ── THREAD PANEL ── */
-
 async function openThread(t, board) {
   const panel  = document.getElementById('panel');
   const scroll = document.getElementById('p-scroll');
@@ -1163,16 +1088,23 @@ async function openThread(t, board) {
   const posts = await loadThread(board, t.no);
   scroll.innerHTML = '';
 
-  if (!posts.length) { scroll.innerHTML='<div class="state-msg">thread unavailable or expired</div>'; return; }
+  if (!posts.length) {
+    scroll.innerHTML='<div class="state-msg">thread unavailable or expired</div>';
+    return;
+  }
 
   const op = posts[0];
   if (op.tim && op.ext) {
     const wrap = document.createElement('div'); wrap.className='op-wrap';
-    const img  = document.createElement('img');  img.className='op-img'; img.alt='';
-    img.src = makeFullUrl(board, op.tim, op.ext, 0);
+    const img  = document.createElement('img');
+    img.className='op-img';
+    img.alt='';
+    img.crossOrigin = "anonymous";
+    img.src = makeFullUrl(board, op.tim, op.ext);
     img.onerror = () => { img.style.display='none'; };
     img.addEventListener('click', () => openLightbox(img.src));
-    wrap.appendChild(img); scroll.appendChild(wrap);
+    wrap.appendChild(img);
+    scroll.appendChild(wrap);
   }
 
   posts.forEach((p,i) => scroll.appendChild(renderPost(p, board, i===0)));
@@ -1187,8 +1119,11 @@ function renderPost(p, board, skipImg=false) {
   </div>${p.com ? `<div class="post-body">${parseComment(p.com)}</div>` : ''}`;
 
   if (!skipImg && p.tim && p.ext) {
-    const img = document.createElement('img'); img.className='post-img'; img.alt='';
-    img.src     = makeFullUrl(board, p.tim, p.ext, 0);
+    const img = document.createElement('img');
+    img.className='post-img';
+    img.alt='';
+    img.crossOrigin = "anonymous";
+    img.src = makeFullUrl(board, p.tim, p.ext);
     img.loading = 'lazy';
     img.onerror = () => { img.style.display='none'; };
     img.addEventListener('click', () => openLightbox(img.src));
@@ -1197,16 +1132,22 @@ function renderPost(p, board, skipImg=false) {
   return el;
 }
 
-function closePanel() { document.getElementById('panel').classList.remove('open'); }
+function loadThread(board, no) {
+  return fetchJSON(`${API}/${board}/thread/${no}.json`).then(data => data ? (data.posts || []) : []);
+}
 
 /* ── LIGHTBOX ── */
-
-function openLightbox(src) { document.getElementById('lb-img').src=src; document.getElementById('lightbox').classList.add('open'); }
-function closeLightbox()   { document.getElementById('lightbox').classList.remove('open'); document.getElementById('lb-img').src=''; }
+function openLightbox(src) {
+  document.getElementById('lb-img').src=src;
+  document.getElementById('lightbox').classList.add('open');
+}
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('open');
+  document.getElementById('lb-img').src='';
+}
 document.getElementById('lightbox').addEventListener('click', closeLightbox);
 
 /* ── PALETTE / OPTIONS ── */
-
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   S.theme = theme;
@@ -1226,7 +1167,6 @@ function initOptions() {
 }
 
 /* ── LOAD FLOW ── */
-
 async function loadBoard(board, sort) {
   if (S.loading) return;
   S.loading=true; S.board=board; S.sort=sort;
@@ -1247,13 +1187,19 @@ async function loadBoard(board, sort) {
   S.loading=false;
 }
 
-/* ── EVENTS ── */
+async function loadCatalog(board, signal) {
+  const data = await fetchJSON(`${API}/${board}/catalog.json`, signal);
+  return data ? data.flatMap(p => p.threads || []) : [];
+}
 
+/* ── EVENTS ── */
 function initBoards() {
   const strip = document.getElementById('boards');
   BOARDS.forEach(b => {
-    const btn=document.createElement('button'); btn.className='b-btn'+(b.id===S.board?' on':'');
-    btn.textContent=b.label; btn.dataset.id=b.id;
+    const btn=document.createElement('button');
+    btn.className='b-btn'+(b.id===S.board?' on':'');
+    btn.textContent=b.label;
+    btn.dataset.id=b.id;
     btn.addEventListener('click', () => loadBoard(b.id, S.sort));
     strip.appendChild(btn);
   });
@@ -1265,12 +1211,11 @@ function initSort() {
       const sort=btn.dataset.sort; S.sort=sort;
       document.querySelectorAll('.s-btn').forEach(b=>b.classList.toggle('on',b===btn));
       if (!S.threads.length) return;
-      S.clusters=buildClusters(S.threads,sort); renderFeed(S.clusters,S.board);
+      S.clusters=buildClusters(S.threads,sort);
+      renderFeed(S.clusters,S.board);
     });
   });
 }
-
-document.getElementById('p-back').addEventListener('click', closePanel);
 
 /* Pull-to-refresh */
 (function() {
@@ -1281,22 +1226,33 @@ document.getElementById('p-back').addEventListener('click', closePanel);
   feed.addEventListener('touchend',   e=>{if(!pulling)return;pulling=false;ptr.classList.remove('show');if(e.changedTouches[0].clientY-sy>60)loadBoard(S.board,S.sort);},{passive:true});
 })();
 
-/* Swipe right → close panel */
+/* Swipe right to close panel */
 (function() {
   const panel=document.getElementById('panel'); let sx=0;
   panel.addEventListener('touchstart', e=>{sx=e.touches[0].clientX;},{passive:true});
-  panel.addEventListener('touchend',   e=>{if(e.changedTouches[0].clientX-sx>80)closePanel();},{passive:true});
+  panel.addEventListener('touchend',   e=>{if(e.changedTouches[0].clientX-sx>80) panel.classList.remove('open');},{passive:true});
 })();
 
-/* Keys */
+/* Keyboard shortcuts */
 document.addEventListener('keydown', e=>{
   if(e.key==='Escape'){
     if(document.getElementById('lightbox').classList.contains('open')){closeLightbox();return;}
-    if(document.getElementById('panel').classList.contains('open')){closePanel();return;}
+    if(document.getElementById('panel').classList.contains('open')){document.getElementById('panel').classList.remove('open');return;}
     document.getElementById('opts-overlay').classList.remove('open');
   }
-  if(e.key>='1'&&e.key<='8'){const b=BOARDS[parseInt(e.key,10)-1];if(b)loadBoard(b.id,S.sort);}
+  if(e.key>='1'&&e.key<='8'){
+    const b=BOARDS[parseInt(e.key,10)-1];
+    if(b) loadBoard(b.id,S.sort);
+  }
 });
+
+/* ── BOOT ── */
+applyTheme(S.theme);
+initBoards();
+initSort();
+initOptions();
+loadBoard('hr', 'heat');
+</script>
 
 /* ── BOOT ── */
 applyTheme(S.theme);
