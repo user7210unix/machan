@@ -819,10 +819,10 @@ const IMG_CDN = 'https://i.4cdn.org';
  * we try direct which often works.
  */
 const IMG_PROXIES = [
-  null,                                /* 0: direct — no proxy */
-  'https://wsrv.nl/?url=',            /* 1: caching resize CDN */
-  'https://images.weserv.nl/?url=',   /* 2: alias */
-  'https://corsproxy.io/?',           /* 3: fallback */
+  null,                                // direct first
+  'https://api.codetabs.com/v1/proxy?quest=',
+  'https://api.allorigins.win/raw?url=',
+  'https://corsproxy.io/?',
 ];
 
 const BOARDS = [
